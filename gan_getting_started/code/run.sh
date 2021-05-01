@@ -1,0 +1,11 @@
+python3 main.py \
+	--root_datadir ../data/ \
+	--batch_size 1 \
+	--shuffle \
+	--pin_memory \
+	--drop_last \
+	--residual_blocks 9 \
+	--lr 2e-4 \
+	--epochs 200 \
+	--decay_epochs 100 \
+	--log_steps 100
