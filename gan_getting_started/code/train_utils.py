@@ -97,7 +97,7 @@ class HistoryBuffer:
                 self._buffer_samples.append(image)
                 update_images.append(image)
             else:
-                p = random.uniform()
+                p = random.uniform(0, 1)
                 if p > 0.5:  # image from history - 50% probability
                     random_idx = random.randint(0, self.buffer_size - 1)
                     up_img = self._buffer_samples[random_idx].clone()

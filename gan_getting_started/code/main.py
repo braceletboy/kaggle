@@ -6,6 +6,7 @@
 '''
 
 import os
+import logging
 import random
 import argparse
 import itertools
@@ -21,6 +22,10 @@ from options import get_parser
 from train_utils import HistoryBuffer
 from data import ImageDataset
 from train_utils import get_lr_lambda
+
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s | %(levelname)s | %(message)s")
 
 
 class Learner:
@@ -39,6 +44,7 @@ class Learner:
         self.device = torch.device(
             'cuda' if (not args.cpu and torch.cuda.is_available()) else 'cpu'
         )
+        logging.info(f'We are using {self.device} as the computation device')
         self.G = GeneratorNetwork(args).to(self.device)
         self.F = GeneratorNetwork(args).to(self.device)
         self.D_X = DiscriminatorNetwork(args).to(self.device)
@@ -63,11 +69,21 @@ class Learner:
         )
 
         # state keeping
-        self._num_steps = 0
+        self._num_steps = 0  # total no. of global steps done
+        self._epochs = 0  # total epochs done
 
     @property
     def num_steps(self):
         return self._num_steps
+
+    @property
+    def epochs(self):
+        return self._epochs
+
+    @epochs.setter
+    def epochs(self, epoch: int):
+        '''Setter for epochs property'''
+        self._epochs = epoch
 
     def train(self, mode: bool = True) -> None:
         '''Set the learner in train or eval mode
@@ -204,7 +220,9 @@ class Learner:
             'optimizer_gen': self.optimizer_gen.state_dict(),
             'optimizer_disc': self.optimizer_disc.state_dict(),
             'gen_scheduler': self.gen_scheduler.state_dict(),
-            'disc_scheduler': self.disc_scheduler.state_dict()
+            'disc_scheduler': self.disc_scheduler.state_dict(),
+            'num_steps': self._num_steps,
+            'epochs': self._epochs
         }
         torch.save(state_dict,
                    os.path.join(self.args.model_dir, 'checkpoint_last.pt'))
@@ -217,22 +235,29 @@ class Learner:
         checkpoint_path
             The path to the checkpoint
         '''
+        logging.info(f'Loading Checkpoint from path: {checkpoint_path}')
 
         # load checkpoint on cpu
         cpu_device = torch.device('cpu')
         state_dict = torch.load(checkpoint_path, cpu_device)
 
         # load the state dicts
-        self.G.load_state_dict(state_dict['G']).to(self.device)
-        self.F.load_state_dict(state_dict['F']).to(self.device)
-        self.D_X.load_state_dict(state_dict['D_X']).to(self.device)
-        self.D_Y.load_state_dict(state_dict['D_Y']).to(self.device)
+        self.G.load_state_dict(state_dict['G'])
+        self.G.to(self.device)
+        self.F.load_state_dict(state_dict['F'])
+        self.F.to(self.device)
+        self.D_X.load_state_dict(state_dict['D_X'])
+        self.D_X.to(self.device)
+        self.D_Y.load_state_dict(state_dict['D_Y'])
+        self.D_Y.to(self.device)
 
         if not self.args.reset_optim:  # load optimization state
             self.optimizer_gen.load_state_dict(state_dict['optimizer_gen'])
             self.optimizer_disc.load_state_dict(state_dict['optimizer_disc'])
             self.gen_scheduler.load_state_dict(state_dict['gen_scheduler'])
             self.disc_scheduler.load_state_dict(state_dict['disc_scheduler'])
+            self._num_steps = state_dict['num_steps']
+            self._epochs = state_dict['epochs']
 
 
 def main(args: argparse.Namespace):
@@ -292,41 +317,63 @@ def main(args: argparse.Namespace):
     with SummaryWriter() as writer:
         learner.train()  # set in train mode
 
-        for epoch in tqdm(range(1, args.epochs + 1), desc='Epoch',
-                          total=args.epochs):
+        with tqdm(desc='Epoch', total=args.epochs) as epochbar:
+            for epoch in range(learner.epochs + 1, args.epochs + 1):
+                with tqdm(desc='Step', total=len(photos_dataset)) as stepbar:
+                    for X, Y in zip(photos_data_loader, monet_data_loader):
+                        # one train-step
+                        logging_output = learner.train_step(X, Y)
 
-            for X, Y in tqdm(zip(photos_data_loader, monet_data_loader),
-                             desc='Step', total=len(photos_dataset)):
-                # one train-step
-                logging_output = learner.train_step(X, Y)
+                        # progress bar update and logging
+                        stepbar.update(
+                            (learner.num_steps % len(photos_dataset) -
+                                stepbar.n)
+                        )
+                        if (
+                            not (learner.num_steps % args.log_steps) or
+                                not (learner.num_steps % len(photos_dataset))
+                        ):
+                            writer.add_scalar(
+                                'Loss/generator_loss',
+                                logging_output['generator_loss'],
+                                learner.num_steps
+                            )
+                            writer.add_scalar(
+                                'Loss/discriminatorX_loss',
+                                logging_output['discriminatorY_loss'],
+                                learner.num_steps
+                            )
+                            writer.add_scalar(
+                                'Loss/discriminatorY_lossY',
+                                logging_output['discriminatorX_loss'],
+                                learner.num_steps
+                            )
+                            writer.add_images(
+                                'Translation/photo_to_monet',
+                                logging_output['photo_to_monet'],
+                                learner.num_steps
+                            )
+                            writer.add_images(
+                                'Translation/monet_to_photo',
+                                logging_output['monet_to_photo'],
+                                learner.num_steps
+                            )
 
-                if (
-                    not (learner.num_steps % args.log_steps) or
-                        not (learner.num_steps % len(photos_dataset))
-                ):
-                    writer.add_scalar('Loss/generator_loss',
-                                      logging_output['generator_loss'],
-                                      learner.num_steps)
-                    writer.add_scalar('Loss/discriminatorX_loss',
-                                      logging_output['discriminatorY_loss'],
-                                      learner.num_steps)
-                    writer.add_scalar('Loss/discriminatorY_lossY',
-                                      logging_output['discriminatorX_loss'],
-                                      learner.num_steps)
-                    writer.add_images('Translation/photo_to_monet',
-                                      logging_output['photo_to_monet'],
-                                      learner.num_steps)
-                    writer.add_scalar('Translation/monet_to_photo',
-                                      logging_output['monet_to_photo'],
-                                      learner.num_steps)
-            # epoch ended
-            learner.save_checkpoint()
-            learner.lr_step()
+                # epoch ended
+                learner.lr_step()
+                learner.epochs = epoch
+                epochbar.update(learner.epochs - epochbar.n + 1)
+
+                # save checkpoint
+                tqdm.write('Saving Checkpoint...')
+                learner.save_checkpoint()
 
 
 if __name__ == '__main__':
     parser = get_parser()
 
     args = parser.parse_args()
+
+    print(args)
 
     main(args)
