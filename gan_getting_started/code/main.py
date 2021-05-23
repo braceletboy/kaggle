@@ -320,15 +320,16 @@ def main(args: argparse.Namespace):
         with tqdm(desc='Epoch', total=args.epochs) as epochbar:
             for epoch in range(learner.epochs + 1, args.epochs + 1):
                 with tqdm(desc='Step', total=len(photos_dataset)) as stepbar:
+                    # update tqdm to the required num_steps -
+                    # useful when we load a checkpoint
+                    stepbar.update(learner.num_steps % len(photos_dataset))
+
                     for X, Y in zip(photos_data_loader, monet_data_loader):
                         # one train-step
                         logging_output = learner.train_step(X, Y)
 
                         # progress bar update and logging
-                        stepbar.update(
-                            (learner.num_steps % len(photos_dataset) -
-                                stepbar.n)
-                        )
+                        stepbar.update()
                         if (
                             not (learner.num_steps % args.log_steps) or
                                 not (learner.num_steps % len(photos_dataset))
